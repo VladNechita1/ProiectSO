@@ -8,6 +8,7 @@
 
 pid_t monitor_pid = -1;
 int monitor_shutting_down = 0;
+int pipefd[2];
 
 void sigchld_handler(int sig)
 {
@@ -36,6 +37,7 @@ int main(void)
   while (1)
     {
       printf(">> ");
+      fflush(stdout);
 
       if (!fgets(input, sizeof(input), stdin))
 	{
@@ -57,10 +59,20 @@ int main(void)
 	      continue;
 	    }
 
+	  if (pipe(pipefd) == -1)
+	    {
+	      perror("[Hub] Pipe creation failed");
+	      continue;
+	    }
+
 	  pid_t pid = fork();
 	  if (pid == 0)
 	    {
-	      // Child process becomes monitor
+	      //child
+	      close(pipefd[0]);
+	      dup2(pipefd[1], STDOUT_FILENO);
+	      close(pipefd[1]);
+
 	      char *args[] = { "./treasure_monitor", NULL };
 	      execv(args[0], args);
 	      perror("[Hub] Failed to start monitor");
@@ -69,8 +81,10 @@ int main(void)
 	  else if (pid > 0)
 	    {
 	      monitor_pid = pid;
+	      close(pipefd[1]);
 	      printf("[Hub] Monitor started (PID %d).\n", monitor_pid);
 	    }
+
 	  else
 	    {
 	      perror("[Hub] fork failed");
@@ -90,45 +104,56 @@ int main(void)
 	  printf("[Hub] Stop signal sent. Waiting for monitor to exit...\n");
         }
 
-      else if (strcmp(input, "list_hunts") == 0 || strncmp(input, "list_treasures ", 15) == 0 || strncmp(input, "view_treasure ", 14) == 0)
+      else if (strcmp(input, "list_hunts") == 0 ||
+	       strncmp(input, "list_treasures ", 15) == 0 ||
+	       strncmp(input, "view_treasure ", 14) == 0)
 	{
 	  if (monitor_pid <= 0)
-	    {
+            {
 	      printf("[Hub] Error: Monitor is not running.\n");
 	      continue;
-	    }
-
+            }
+	
 	  FILE *f = fopen("monitor_command.txt", "w");
 	  if (!f)
 	    {
 	      perror("[Hub] Failed to write to command file");
 	      continue;
 	    }
-
 	  fprintf(f, "%s\n", input);
 	  fclose(f);
 
 	  kill(monitor_pid, SIGUSR1);
 	  printf("[Hub] Sent command to monitor: %s\n", input);
-        }
 
+	  char buffer[1024];
+	  ssize_t bytes_read;
+	  printf("[Monitor Output]:\n");
+	  while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0)
+	    {
+	      buffer[bytes_read] = '\0';
+	      printf("%s", buffer);
+	      if (bytes_read < sizeof(buffer) - 1)
+		break;
+	    }
+	}
+    
       else if (strcmp(input, "exit") == 0)
 	{
 	  if (monitor_pid > 0)
 	    {
 	      printf("[Hub] Cannot exit: Monitor still running. Use stop_monitor first.\n");
-            }
+	    }
 	  else
 	    {
 	      printf("[Hub] Exiting hub.\n");
 	      break;
-            }
-        }
-
+	    }
+	}
       else
 	{
 	  printf("[Hub] Unknown command.\n");
-        }
+	}
     }
 
   return 0;
